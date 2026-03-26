@@ -60,11 +60,12 @@ st.markdown("""
 
 # --- Spotify 클라이언트 ---
 def get_spotify_client():
-    # Streamlit Cloud secrets 우선, 없으면 환경변수 fallback
+    client_id = None
+    client_secret = None
     try:
-        client_id = st.secrets.get("SPOTIFY_CLIENT_ID") or os.environ.get('SPOTIFY_CLIENT_ID')
-        client_secret = st.secrets.get("SPOTIFY_CLIENT_SECRET") or os.environ.get('SPOTIFY_CLIENT_SECRET')
-    except Exception:
+        client_id = st.secrets["SPOTIFY_CLIENT_ID"]
+        client_secret = st.secrets["SPOTIFY_CLIENT_SECRET"]
+    except (KeyError, FileNotFoundError):
         client_id = os.environ.get('SPOTIFY_CLIENT_ID')
         client_secret = os.environ.get('SPOTIFY_CLIENT_SECRET')
     if not client_id or not client_secret:
@@ -95,7 +96,7 @@ def display_track(track_id):
     """
     st.markdown(embed_html, unsafe_allow_html=True)
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=3600)
 def fetch_playlist(url):
     match = re.search(r'playlist/([a-zA-Z0-9]+)', url)
     if not match:
