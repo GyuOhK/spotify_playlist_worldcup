@@ -73,11 +73,10 @@ def display_track(track_id):
 def parse_exportify_csv(uploaded_file):
     content = uploaded_file.read().decode('utf-8-sig')
     reader = csv.DictReader(io.StringIO(content))
-    headers = reader.fieldnames
-    st.write("DEBUG columns:", headers)  # 컬럼명 확인
     tracks = []
     for row in reader:
-        track_id = row.get('Spotify ID', '').strip()
+        uri = row.get('Track URI', '').strip()
+        track_id = uri.split(':')[-1] if uri else row.get('Spotify ID', '').strip()
         title = row.get('Track Name', '').strip()
         artist = row.get('Artist Name(s)', '').strip()
         album = row.get('Album Name', '').strip()
