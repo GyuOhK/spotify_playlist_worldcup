@@ -150,6 +150,12 @@ def fetch_playlist(url):
             raise ValueError("Spotify 토큰이 만료되었습니다. 다시 로그인해주세요.")
         resp.raise_for_status()
         data = resp.json()
+        # DEBUG: 첫 번째 페이지 응답 확인
+        if not tracks:
+            st.write("DEBUG total:", data.get('total'), "/ items count:", len(data.get('items', [])))
+            if data.get('items'):
+                st.write("DEBUG first item keys:", list(data['items'][0].keys()))
+                st.write("DEBUG first item track:", data['items'][0].get('track'))
         for item in data.get('items', []):
             track = item.get('track')
             if not track or not track.get('id'):
