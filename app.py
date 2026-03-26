@@ -68,6 +68,7 @@ def get_auth_url(client_id, redirect_uri):
         "client_id": client_id,
         "response_type": "code",
         "redirect_uri": redirect_uri,
+        "scope": "playlist-read-private",
         "show_dialog": "false",
     }
     return "https://accounts.spotify.com/authorize?" + urlencode(params)
