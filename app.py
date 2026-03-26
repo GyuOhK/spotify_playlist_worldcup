@@ -52,8 +52,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- Spotify 설정 ---
-SPOTIFY_SCOPES = "playlist-read-private"
-
 def get_credentials():
     try:
         client_id = st.secrets["SPOTIFY_CLIENT_ID"]
@@ -70,7 +68,6 @@ def get_auth_url(client_id, redirect_uri):
         "client_id": client_id,
         "response_type": "code",
         "redirect_uri": redirect_uri,
-        "scope": SPOTIFY_SCOPES,
         "show_dialog": "false",
     }
     return "https://accounts.spotify.com/authorize?" + urlencode(params)
