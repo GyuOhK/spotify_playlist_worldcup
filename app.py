@@ -52,7 +52,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- Spotify 설정 ---
-SPOTIFY_SCOPES = "playlist-read-public playlist-read-private"
+SPOTIFY_SCOPES = "playlist-read-private"
 
 def get_credentials():
     try:
