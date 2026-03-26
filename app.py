@@ -1,6 +1,5 @@
 import streamlit as st
-import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
+import requests
 import random
 import copy
 import json
@@ -58,20 +57,24 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- Spotify 클라이언트 ---
-def get_spotify_client():
-    client_id = None
-    client_secret = None
+# --- Spotify 인증 ---
+def get_spotify_credentials():
     try:
         client_id = st.secrets["SPOTIFY_CLIENT_ID"]
         client_secret = st.secrets["SPOTIFY_CLIENT_SECRET"]
     except (KeyError, FileNotFoundError):
         client_id = os.environ.get('SPOTIFY_CLIENT_ID')
         client_secret = os.environ.get('SPOTIFY_CLIENT_SECRET')
-    if not client_id or not client_secret:
-        return None
-    auth_manager = SpotifyClientCredentials(client_id=client_id, client_secret=client_secret)
-    return spotipy.Spotify(auth_manager=auth_manager)
+    return client_id, client_secret
+
+def get_spotify_token(client_id, client_secret):
+    resp = requests.post(
+        "https://accounts.spotify.com/api/token",
+        data={"grant_type": "client_credentials"},
+        auth=(client_id, client_secret),
+    )
+    resp.raise_for_status()
+    return resp.json()["access_token"]
 
 # --- 상태 초기화 ---
 if 'playlist_data' not in st.session_state: st.session_state.playlist_data = []
@@ -101,29 +104,35 @@ def fetch_playlist(url):
     match = re.search(r'playlist/([a-zA-Z0-9]+)', url)
     if not match:
         raise ValueError("올바른 Spotify 플레이리스트 URL이 아닙니다.\n예: https://open.spotify.com/playlist/...")
-
     playlist_id = match.group(1)
-    sp = get_spotify_client()
-    if sp is None:
-        raise ValueError("SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET 환경변수를 설정해주세요.")
+
+    client_id, client_secret = get_spotify_credentials()
+    if not client_id or not client_secret:
+        raise ValueError("SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET 를 설정해주세요.")
+
+    token = get_spotify_token(client_id, client_secret)
+    headers = {"Authorization": f"Bearer {token}"}
 
     tracks = []
-    results = sp.playlist_tracks(playlist_id)
-    while results:
-        for item in results['items']:
+    next_url = f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks?limit=50"
+    while next_url:
+        resp = requests.get(next_url, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        for item in data.get('items', []):
             track = item.get('track')
             if not track or not track.get('id'):
                 continue
-            album_images = track['album'].get('images', [])
+            images = track['album'].get('images', [])
             tracks.append({
                 'id': track['id'],
                 'title': track['name'],
                 'artist': ', '.join(a['name'] for a in track['artists']),
                 'album': track['album']['name'],
-                'image': album_images[0]['url'] if album_images else None,
+                'image': images[0]['url'] if images else None,
                 'url': track['external_urls']['spotify'],
             })
-        results = sp.next(results) if results.get('next') else None
+        next_url = data.get('next')
     return tracks
 
 def reset_game():
@@ -265,8 +274,8 @@ if not st.session_state.game_started:
     st.write("")
 
     # 환경변수 미설정 경고
-    has_secrets = bool(get_spotify_client())
-    if not has_secrets:
+    client_id, client_secret = get_spotify_credentials()
+    if not client_id or not client_secret:
         st.warning("⚠️ SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET 환경변수가 설정되지 않았습니다.\n\n[Spotify Developer Dashboard](https://developer.spotify.com/dashboard)에서 앱을 생성하고 `.env` 파일에 추가해주세요.")
 
     st.info("Spotify 플레이리스트 URL을 입력하세요.\n예: https://open.spotify.com/playlist/...")
