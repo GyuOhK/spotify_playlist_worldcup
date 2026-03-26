@@ -60,8 +60,13 @@ st.markdown("""
 
 # --- Spotify 클라이언트 ---
 def get_spotify_client():
-    client_id = os.environ.get('SPOTIFY_CLIENT_ID')
-    client_secret = os.environ.get('SPOTIFY_CLIENT_SECRET')
+    # Streamlit Cloud secrets 우선, 없으면 환경변수 fallback
+    try:
+        client_id = st.secrets.get("SPOTIFY_CLIENT_ID") or os.environ.get('SPOTIFY_CLIENT_ID')
+        client_secret = st.secrets.get("SPOTIFY_CLIENT_SECRET") or os.environ.get('SPOTIFY_CLIENT_SECRET')
+    except Exception:
+        client_id = os.environ.get('SPOTIFY_CLIENT_ID')
+        client_secret = os.environ.get('SPOTIFY_CLIENT_SECRET')
     if not client_id or not client_secret:
         return None
     auth_manager = SpotifyClientCredentials(client_id=client_id, client_secret=client_secret)
@@ -259,7 +264,8 @@ if not st.session_state.game_started:
     st.write("")
 
     # 환경변수 미설정 경고
-    if not os.environ.get('SPOTIFY_CLIENT_ID') or not os.environ.get('SPOTIFY_CLIENT_SECRET'):
+    has_secrets = bool(get_spotify_client())
+    if not has_secrets:
         st.warning("⚠️ SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET 환경변수가 설정되지 않았습니다.\n\n[Spotify Developer Dashboard](https://developer.spotify.com/dashboard)에서 앱을 생성하고 `.env` 파일에 추가해주세요.")
 
     st.info("Spotify 플레이리스트 URL을 입력하세요.\n예: https://open.spotify.com/playlist/...")
