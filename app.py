@@ -5,6 +5,8 @@ import copy
 import json
 import os
 import re
+import time
+from urllib.parse import urlencode
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -22,14 +24,6 @@ st.markdown("""
     .stButton>button {
         width: 100%;
         border-radius: 8px;
-    }
-    .select-btn {
-        height: 3em;
-        font-size: 20px;
-        font-weight: bold;
-        background-color: #1DB954;
-        color: white !important;
-        border: none;
     }
     .vs-text {
         text-align: center;
@@ -57,24 +51,65 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- Spotify 인증 ---
-def get_spotify_credentials():
+# --- Spotify 설정 ---
+SPOTIFY_SCOPES = "playlist-read-public playlist-read-private"
+
+def get_credentials():
     try:
         client_id = st.secrets["SPOTIFY_CLIENT_ID"]
         client_secret = st.secrets["SPOTIFY_CLIENT_SECRET"]
+        redirect_uri = st.secrets["REDIRECT_URI"]
     except (KeyError, FileNotFoundError):
-        client_id = os.environ.get('SPOTIFY_CLIENT_ID')
-        client_secret = os.environ.get('SPOTIFY_CLIENT_SECRET')
-    return client_id, client_secret
+        client_id = os.environ.get('SPOTIFY_CLIENT_ID', '')
+        client_secret = os.environ.get('SPOTIFY_CLIENT_SECRET', '')
+        redirect_uri = os.environ.get('REDIRECT_URI', 'http://localhost:8501')
+    return client_id, client_secret, redirect_uri
 
-def get_spotify_token(client_id, client_secret):
+def get_auth_url(client_id, redirect_uri):
+    params = {
+        "client_id": client_id,
+        "response_type": "code",
+        "redirect_uri": redirect_uri,
+        "scope": SPOTIFY_SCOPES,
+        "show_dialog": "false",
+    }
+    return "https://accounts.spotify.com/authorize?" + urlencode(params)
+
+def exchange_code_for_token(code, client_id, client_secret, redirect_uri):
     resp = requests.post(
         "https://accounts.spotify.com/api/token",
-        data={"grant_type": "client_credentials"},
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+        },
         auth=(client_id, client_secret),
     )
     resp.raise_for_status()
-    return resp.json()["access_token"]
+    return resp.json()
+
+def is_token_valid():
+    return (
+        "spotify_token" in st.session_state
+        and time.time() < st.session_state.get("token_expires_at", 0)
+    )
+
+# --- OAuth 콜백 처리 ---
+client_id, client_secret, redirect_uri = get_credentials()
+query_params = st.query_params.to_dict()
+
+if "code" in query_params and not is_token_valid():
+    try:
+        token_data = exchange_code_for_token(
+            query_params["code"], client_id, client_secret, redirect_uri
+        )
+        st.session_state.spotify_token = token_data["access_token"]
+        st.session_state.token_expires_at = time.time() + token_data.get("expires_in", 3600)
+        st.query_params.clear()
+        st.rerun()
+    except Exception as e:
+        st.error(f"Spotify 로그인 실패: {e}")
+        st.query_params.clear()
 
 # --- 상태 초기화 ---
 if 'playlist_data' not in st.session_state: st.session_state.playlist_data = []
@@ -99,24 +134,22 @@ def display_track(track_id):
     """
     st.markdown(embed_html, unsafe_allow_html=True)
 
-@st.cache_data(show_spinner=False, ttl=3600)
 def fetch_playlist(url):
     match = re.search(r'playlist/([a-zA-Z0-9]+)', url)
     if not match:
         raise ValueError("올바른 Spotify 플레이리스트 URL이 아닙니다.\n예: https://open.spotify.com/playlist/...")
     playlist_id = match.group(1)
 
-    client_id, client_secret = get_spotify_credentials()
-    if not client_id or not client_secret:
-        raise ValueError("SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET 를 설정해주세요.")
-
-    token = get_spotify_token(client_id, client_secret)
-    headers = {"Authorization": f"Bearer {token}"}
-
+    headers = {"Authorization": f"Bearer {st.session_state.spotify_token}"}
     tracks = []
     next_url = f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks?limit=50"
     while next_url:
         resp = requests.get(next_url, headers=headers)
+        if resp.status_code == 401:
+            # 토큰 만료 → 재로그인 유도
+            del st.session_state["spotify_token"]
+            st.session_state["token_expires_at"] = 0
+            raise ValueError("Spotify 토큰이 만료되었습니다. 다시 로그인해주세요.")
         resp.raise_for_status()
         data = resp.json()
         for item in data.get('items', []):
@@ -198,7 +231,11 @@ def select_winner(choice_idx):
     if st.session_state.bye_video: total += 1
     round_name = "결승전" if total <= 2 else f"{total}강"
 
-    st.session_state.match_history.append({'round': round_name, 'winner': winner['title'], 'winner_artist': winner['artist'], 'loser': loser['title'], 'loser_artist': loser['artist']})
+    st.session_state.match_history.append({
+        'round': round_name,
+        'winner': winner['title'], 'winner_artist': winner['artist'],
+        'loser': loser['title'], 'loser_artist': loser['artist'],
+    })
     st.session_state.next_round_list.append(winner)
     st.session_state.current_pair = []
     check_round_end()
@@ -268,16 +305,29 @@ with st.sidebar:
     if uploaded_file and st.button("파일 적용하여 이어하기"):
         if load_game_state(uploaded_file): st.success("게임을 불러왔습니다!"); st.rerun()
 
-# --- 메인 화면 ---
+    if is_token_valid():
+        st.divider()
+        if st.button("🔓 Spotify 로그아웃"):
+            del st.session_state["spotify_token"]
+            st.session_state["token_expires_at"] = 0
+            reset_game()
+            st.rerun()
+
+# --- 로그인 화면 ---
+if not is_token_valid():
+    st.title("🎵 Spotify 플레이리스트 이상형 월드컵")
+    st.write("")
+    st.write("Spotify 계정으로 로그인하면 플레이리스트를 가져올 수 있습니다.")
+    st.write("")
+    auth_url = get_auth_url(client_id, redirect_uri)
+    st.link_button("🟢 Spotify로 로그인", auth_url, use_container_width=False)
+    st.stop()
+
+# --- 이하 로그인된 상태에서만 실행 ---
+
 if not st.session_state.game_started:
     st.title("🎵 Spotify 플레이리스트 이상형 월드컵")
     st.write("")
-
-    # 환경변수 미설정 경고
-    client_id, client_secret = get_spotify_credentials()
-    if not client_id or not client_secret:
-        st.warning("⚠️ SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET 환경변수가 설정되지 않았습니다.\n\n[Spotify Developer Dashboard](https://developer.spotify.com/dashboard)에서 앱을 생성하고 `.env` 파일에 추가해주세요.")
-
     st.info("Spotify 플레이리스트 URL을 입력하세요.\n예: https://open.spotify.com/playlist/...")
     url = st.text_input("링크 입력", placeholder="https://open.spotify.com/playlist/...")
     st.write("")
@@ -343,7 +393,6 @@ elif st.session_state.winner:
     st.title("👑 최종 우승! 👑")
     winner = st.session_state.winner
 
-    # 순위 산정
     reversed_history = list(reversed(st.session_state.match_history))
     unique_rounds = []
     for match in reversed_history:
