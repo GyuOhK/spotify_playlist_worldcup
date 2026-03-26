@@ -1,15 +1,11 @@
 import streamlit as st
-import requests
+import csv
+import io
 import random
 import copy
 import json
 import os
 import re
-import time
-from urllib.parse import urlencode
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # --- 페이지 설정 ---
 st.set_page_config(page_title="Spotify 이상형 월드컵", layout="wide", initial_sidebar_state="expanded")
@@ -51,64 +47,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- Spotify 설정 ---
-def get_credentials():
-    try:
-        client_id = st.secrets["SPOTIFY_CLIENT_ID"]
-        client_secret = st.secrets["SPOTIFY_CLIENT_SECRET"]
-        redirect_uri = st.secrets["REDIRECT_URI"]
-    except (KeyError, FileNotFoundError):
-        client_id = os.environ.get('SPOTIFY_CLIENT_ID', '')
-        client_secret = os.environ.get('SPOTIFY_CLIENT_SECRET', '')
-        redirect_uri = os.environ.get('REDIRECT_URI', 'http://localhost:8501')
-    return client_id, client_secret, redirect_uri
-
-def get_auth_url(client_id, redirect_uri):
-    params = {
-        "client_id": client_id,
-        "response_type": "code",
-        "redirect_uri": redirect_uri,
-        "scope": "playlist-read-private",
-        "show_dialog": "false",
-    }
-    return "https://accounts.spotify.com/authorize?" + urlencode(params)
-
-def exchange_code_for_token(code, client_id, client_secret, redirect_uri):
-    resp = requests.post(
-        "https://accounts.spotify.com/api/token",
-        data={
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": redirect_uri,
-        },
-        auth=(client_id, client_secret),
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-def is_token_valid():
-    return (
-        "spotify_token" in st.session_state
-        and time.time() < st.session_state.get("token_expires_at", 0)
-    )
-
-# --- OAuth 콜백 처리 ---
-client_id, client_secret, redirect_uri = get_credentials()
-query_params = st.query_params.to_dict()
-
-if "code" in query_params and not is_token_valid():
-    try:
-        token_data = exchange_code_for_token(
-            query_params["code"], client_id, client_secret, redirect_uri
-        )
-        st.session_state.spotify_token = token_data["access_token"]
-        st.session_state.token_expires_at = time.time() + token_data.get("expires_in", 3600)
-        st.query_params.clear()
-        st.rerun()
-    except Exception as e:
-        st.error(f"Spotify 로그인 실패: {e}")
-        st.query_params.clear()
-
 # --- 상태 초기화 ---
 if 'playlist_data' not in st.session_state: st.session_state.playlist_data = []
 if 'current_round_list' not in st.session_state: st.session_state.current_round_list = []
@@ -132,38 +70,25 @@ def display_track(track_id):
     """
     st.markdown(embed_html, unsafe_allow_html=True)
 
-def fetch_playlist(url):
-    match = re.search(r'playlist/([a-zA-Z0-9]+)', url)
-    if not match:
-        raise ValueError("올바른 Spotify 플레이리스트 URL이 아닙니다.\n예: https://open.spotify.com/playlist/...")
-    playlist_id = match.group(1)
-
-    headers = {"Authorization": f"Bearer {st.session_state.spotify_token}"}
+def parse_exportify_csv(uploaded_file):
+    content = uploaded_file.read().decode('utf-8-sig')
+    reader = csv.DictReader(io.StringIO(content))
     tracks = []
-    next_url = f"https://api.spotify.com/v1/playlists/{playlist_id}/items?limit=50"
-    while next_url:
-        resp = requests.get(next_url, headers=headers)
-        if resp.status_code == 401:
-            # 토큰 만료 → 재로그인 유도
-            del st.session_state["spotify_token"]
-            st.session_state["token_expires_at"] = 0
-            raise ValueError("Spotify 토큰이 만료되었습니다. 다시 로그인해주세요.")
-        resp.raise_for_status()
-        data = resp.json()
-        for item in data.get('items', []):
-            track = item.get('item') or item.get('track')
-            if not track or not track.get('id') or track.get('type') != 'track':
-                continue
-            images = track['album'].get('images', [])
-            tracks.append({
-                'id': track['id'],
-                'title': track['name'],
-                'artist': ', '.join(a['name'] for a in track['artists']),
-                'album': track['album']['name'],
-                'image': images[0]['url'] if images else None,
-                'url': track['external_urls']['spotify'],
-            })
-        next_url = data.get('next')
+    for row in reader:
+        track_id = row.get('Spotify ID', '').strip()
+        title = row.get('Track Name', '').strip()
+        artist = row.get('Artist Name(s)', '').strip()
+        album = row.get('Album Name', '').strip()
+        if not track_id or not title:
+            continue
+        tracks.append({
+            'id': track_id,
+            'title': title,
+            'artist': artist,
+            'album': album,
+            'image': None,
+            'url': f'https://open.spotify.com/track/{track_id}',
+        })
     return tracks
 
 def reset_game():
@@ -299,37 +224,26 @@ with st.sidebar:
         st.download_button("📥 현재 상태 파일로 저장", json_str, "worldcup_save.json", "application/json")
 
     st.divider()
-    uploaded_file = st.file_uploader("📤 저장된 파일 불러오기", type=['json'])
-    if uploaded_file and st.button("파일 적용하여 이어하기"):
-        if load_game_state(uploaded_file): st.success("게임을 불러왔습니다!"); st.rerun()
+    uploaded_save = st.file_uploader("📤 저장된 파일 불러오기", type=['json'])
+    if uploaded_save and st.button("파일 적용하여 이어하기"):
+        if load_game_state(uploaded_save): st.success("게임을 불러왔습니다!"); st.rerun()
 
-    if is_token_valid():
-        st.divider()
-        if st.button("🔓 Spotify 로그아웃"):
-            del st.session_state["spotify_token"]
-            st.session_state["token_expires_at"] = 0
-            reset_game()
-            st.rerun()
-
-# --- 로그인 화면 ---
-if not is_token_valid():
-    st.title("🎵 Spotify 플레이리스트 이상형 월드컵")
-    st.write("")
-    st.write("Spotify 계정으로 로그인하면 플레이리스트를 가져올 수 있습니다.")
-    st.write("")
-    auth_url = get_auth_url(client_id, redirect_uri)
-    st.link_button("🟢 Spotify로 로그인", auth_url, use_container_width=False)
-    st.stop()
-
-# --- 이하 로그인된 상태에서만 실행 ---
-
+# --- 메인 화면 ---
 if not st.session_state.game_started:
     st.title("🎵 Spotify 플레이리스트 이상형 월드컵")
     st.write("")
-    st.info("Spotify 플레이리스트 URL을 입력하세요.\n예: https://open.spotify.com/playlist/...")
-    url = st.text_input("링크 입력", placeholder="https://open.spotify.com/playlist/...")
+
+    st.info(
+        "**사용 방법**\n\n"
+        "1. [exportify.net](https://exportify.net) 접속 → Spotify 로그인\n"
+        "2. 원하는 플레이리스트 옆 **Export** 클릭 → CSV 다운로드\n"
+        "3. 아래에 CSV 파일 업로드 후 게임 시작!"
+    )
+
+    uploaded_csv = st.file_uploader("📂 Exportify CSV 업로드", type=['csv'])
     st.write("")
-    use_partial = st.checkbox("⚙️ 플레이리스트의 일부 곡만 가져오기")
+
+    use_partial = st.checkbox("⚙️ 일부 곡만 가져오기")
 
     target_count = 16
     start_index = 1
@@ -354,34 +268,33 @@ if not st.session_state.game_started:
 
     st.write("")
     if st.button("게임 시작하기", use_container_width=True):
-        if url:
-            with st.spinner("플레이리스트 목록을 가져오는 중..."):
-                try:
-                    tracks = fetch_playlist(url)
+        if uploaded_csv:
+            try:
+                tracks = parse_exportify_csv(uploaded_csv)
 
-                    if use_partial and len(tracks) > target_count:
-                        if slice_method == "앞에서부터":
-                            tracks = tracks[:target_count]
-                        elif slice_method == "뒤에서부터":
-                            tracks = tracks[-target_count:]
-                        elif slice_method == "랜덤":
-                            tracks = random.sample(tracks, target_count)
-                        elif slice_method == "특정 순서부터":
-                            start_idx = max(0, start_index - 1)
-                            tracks = tracks[start_idx:start_idx + target_count]
+                if use_partial and len(tracks) > target_count:
+                    if slice_method == "앞에서부터":
+                        tracks = tracks[:target_count]
+                    elif slice_method == "뒤에서부터":
+                        tracks = tracks[-target_count:]
+                    elif slice_method == "랜덤":
+                        tracks = random.sample(tracks, target_count)
+                    elif slice_method == "특정 순서부터":
+                        start_idx = max(0, start_index - 1)
+                        tracks = tracks[start_idx:start_idx + target_count]
 
-                    if len(tracks) < 2:
-                        st.error(f"곡이 부족합니다. (추출된 곡: {len(tracks)}개)")
-                    else:
-                        random.shuffle(tracks)
-                        st.session_state.playlist_data = tracks
-                        st.session_state.current_round_list = tracks[:]
-                        st.session_state.game_started = True
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"오류가 발생했습니다: {e}")
+                if len(tracks) < 2:
+                    st.error(f"곡이 부족합니다. (추출된 곡: {len(tracks)}개)")
+                else:
+                    random.shuffle(tracks)
+                    st.session_state.playlist_data = tracks
+                    st.session_state.current_round_list = tracks[:]
+                    st.session_state.game_started = True
+                    st.rerun()
+            except Exception as e:
+                st.error(f"오류가 발생했습니다: {e}")
         else:
-            st.warning("URL을 입력해주세요.")
+            st.warning("CSV 파일을 업로드해주세요.")
 
 elif st.session_state.winner:
     if not st.session_state.balloons_shown:
