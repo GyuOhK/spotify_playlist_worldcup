@@ -140,7 +140,7 @@ def fetch_playlist(url):
 
     headers = {"Authorization": f"Bearer {st.session_state.spotify_token}"}
     tracks = []
-    next_url = f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks?limit=50"
+    next_url = f"https://api.spotify.com/v1/playlists/{playlist_id}/items?limit=50"
     while next_url:
         resp = requests.get(next_url, headers=headers)
         if resp.status_code == 401:
